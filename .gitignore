@@ -1,5 +1,6 @@
 # Ignore data folder and large files
 data/
+models/
 *.zip
 *.tar.gz
 
