@@ -1,1 +1,13 @@
+# Ignore data folder and large files
 data/
+*.zip
+*.tar.gz
+
+# Python cache and env
+__pycache__/
+*.pyc
+venv/
+.env/
+
+# System files
+.DS_Store
