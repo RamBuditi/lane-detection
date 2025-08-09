@@ -1,36 +1,27 @@
-name: lane-detection 
+name: lane-detection
 channels:
   - pytorch
-  - nvidia
-  - conda-forge # Added for better package availability
-  - defaults
+  - nvidia  
+  - conda-forge
 dependencies:
-  # 1. Core ML & Python Version
-  # Versions are based on your previous environment for consistency.
-  - python=3.12
+  # Core environment
+  - python=3.11
   - pip
-  - pytorch=2.5.1
-  - torchvision=0.20.1
-  - torchaudio=2.5.1
-  - pytorch-cuda=12.1 # This tells Conda to install PyTorch compiled for CUDA 12.1
-
-  # 2. Data Handling & Image Processing
-  - opencv
-  - pillow=11.3.0
-  - numpy=2.3.1
+  
+  # PyTorch with CUDA support - let conda resolve numpy version automatically
+  - pytorch::pytorch=2.5.1
+  - pytorch::torchvision=0.20.1
+  - pytorch::torchaudio=2.5.1
+  - pytorch::pytorch-cuda=12.1
+  
+  # Other core packages - let conda resolve versions
   - pandas
-
-  # 3. MLOps Stack
-  - mlflow
-  - dvc
-  - fastapi
-  - uvicorn
-  - python-multipart
-  - metaflow
-  - evidently
-
-  # 4. Utilities
+  - pillow
   - tqdm
   - pyyaml
-  - jupyterlab # Optional: useful for debugging inside the container
-
+  - jupyterlab
+  
+  # Install opencv via pip instead to avoid conflicts
+  - pip:
+    - opencv-python
+    - numpy

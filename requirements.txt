@@ -1,0 +1,8 @@
+# MLOps packages
+mlflow
+dvc
+fastapi
+uvicorn
+python-multipart
+metaflow
+evidently

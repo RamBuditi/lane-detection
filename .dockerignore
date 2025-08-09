@@ -1,0 +1,40 @@
+# Ignore the entire data directory
+data/
+culane/
+
+# Ignore saved models
+models/
+
+# Ignore Python virtual environments
+venv/
+env/
+.env
+lane-detection/
+laneDetection/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore IDE and OS-specific files
+.idea/
+.vscode/
+.DS_Store
+
+# Ignore Git files
+.git/
+.gitignore
+
+# Ignore DVC cache and metadata
+.dvc/
+.dvcignore
+
+# Ignore MLflow tracking data
+mlruns/
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
