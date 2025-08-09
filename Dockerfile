@@ -7,6 +7,7 @@ ENV LANG C.UTF-8
 
 # 3. Install system dependencies and Miniconda
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
     wget \
     bzip2 \
     ca-certificates \
@@ -21,7 +22,7 @@ RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86
 # 4. Set the PATH to include Conda
 ENV PATH /opt/conda/bin:$PATH
 
-# 5. Configure Conda channels
+# 5. Forcefully re-configure Conda's base channels
 RUN conda config --system --set channel_priority strict && \
     conda config --system --remove channels defaults && \
     conda config --system --add channels conda-forge
@@ -29,18 +30,18 @@ RUN conda config --system --set channel_priority strict && \
 # 6. Set the working directory
 WORKDIR /app
 
-# 7. Create the conda environment with CUDA PyTorch
+# 7. HYBRID INSTALL PART 1: Create the core Conda environment
 COPY environment.yml .
 RUN conda env create -f environment.yml
 
 # 8. Set the default shell for subsequent build commands
 SHELL ["conda", "run", "-n", "lane-detection", "/bin/bash", "-c"]
 
-# 9. Install MLOps packages with pip
+# 9. HYBRID INSTALL PART 2: Install MLOps packages with pip
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# 10. Initialize bash for interactive use
+# 10. Initialize the bash shell for Conda, THEN add the auto-activate command.
 RUN conda init bash && \
     echo "conda activate lane-detection" >> /root/.bashrc
 
