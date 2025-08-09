@@ -1,6 +1,6 @@
 # Ignore data folder and large files
 data/
-models/
+
 *.zip
 *.tar.gz
 
@@ -13,3 +13,10 @@ venv/
 # System files
 .DS_Store
 /data
+
+# Ignore large model files, but not the directory structure
+models/**/*.pth
+
+# But DO NOT ignore the DVC pointer files or placeholder .gitignore files
+!models/**/*.dvc
+!models/**/.gitignore

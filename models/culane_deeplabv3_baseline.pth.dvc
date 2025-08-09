@@ -1,0 +1,5 @@
+outs:
+- md5: 9822039b793b305465c4df74d26a9224
+  size: 168362394
+  hash: md5
+  path: culane_deeplabv3_baseline.pth
