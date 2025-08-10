@@ -10,6 +10,8 @@ services:
     user: "${UID}:${GID}"
     volumes:
       - .:/app
+    ports:
+      - "5000:5000"  # Add this line for MLflow UI
     shm_size: '2gb'
     stdin_open: true
     tty: true
