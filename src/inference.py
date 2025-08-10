@@ -14,19 +14,31 @@ def run_inference(args):
     DATA_ROOT = 'data/CULane' 
     IMG_HEIGHT = 288
     IMG_WIDTH = 800
-    RUN_ID = args.run_id
+    
+    # --- UPDATED: Load model based on name and ALIAS from the registry ---
+    MODEL_NAME = "culane-lane-detector"
+    MODEL_ALIAS = args.alias # Get alias from command line args
 
     # --- 2. Setup Device ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- 3. Load Model From MLflow ---
-    print(f"Loading model from MLflow Run ID: {RUN_ID}")
-    model_uri = f"runs:/{RUN_ID}/model"
-    model = mlflow.pytorch.load_model(model_uri, map_location=device)
-    print("Model loaded successfully.")
-    model.eval()
+    # --- 3. Load Model from MLflow Model Registry using an Alias ---
+    print(f"Loading model '{MODEL_NAME}' with alias '{MODEL_ALIAS}' from the registry...")
+    
+    # The 'models:/<name>@<alias>' URI scheme tells MLflow to use aliases
+    model_uri = f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
+    
+    try:
+        model = mlflow.pytorch.load_model(model_uri, map_location=device)
+        model.eval()
+        print("Model loaded successfully.")
+    except mlflow.exceptions.MlflowException as e:
+        print(f"Error loading model: {e}")
+        print(f"Have you registered the model '{MODEL_NAME}' and assigned it the alias '{MODEL_ALIAS}'?")
+        return
 
+    # --- (The rest of the script is unchanged) ---
     # --- 4. Get a Test Image ---
     if args.image:
         test_image_full_path = args.image
@@ -43,7 +55,7 @@ def run_inference(args):
     
     print(f"Running inference on: {test_image_full_path}")
 
-    # --- 5. Preprocess the Image ---
+    # --- 5. Preprocess and Run Inference ---
     transform = A.Compose([
         A.Resize(height=IMG_HEIGHT, width=IMG_WIDTH),
         A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -53,15 +65,11 @@ def run_inference(args):
     original_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB)
     transformed = transform(image=original_image)
     input_tensor = transformed['image'].unsqueeze(0).to(device)
-
-    # --- 6. Run Inference ---
     with torch.no_grad():
         output = model(input_tensor)
-
-    # --- 7. Post-process the Output ---
     prediction = torch.argmax(output, dim=1).squeeze(0).cpu().numpy().astype(np.uint8)
 
-    # --- 8. Visualize the Result ---
+    # --- 6. Visualize the Result ---
     color_map = np.array([[0, 0, 0], [0, 255, 0], [0, 0, 255], [255, 0, 0], [255, 255, 0]], dtype=np.uint8)
     prediction_color = color_map[prediction]
     resized_original = cv2.resize(original_image, (IMG_WIDTH, IMG_HEIGHT))
@@ -77,17 +85,16 @@ def run_inference(args):
     ax[2].set_title('Prediction Overlay', fontsize=16)
     ax[2].axis('off')
     plt.tight_layout()
-
-    # Define the output directory and save the plot there
     output_dir = "outputs"
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, "inference_result.png")
+    output_path = os.path.join(output_dir, "inference_result_from_registry.png")
     plt.savefig(output_path)
     print(f"Inference result plot saved to {output_path}")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Run lane detection inference on an image using a model from MLflow.")
-    parser.add_argument('--run_id', type=str, required=True, help="MLflow Run ID of the model to use.")
+    parser = argparse.ArgumentParser(description="Run inference using a model from the MLflow Model Registry.")
+    # --- UPDATED: Argument parser now takes an alias ---
+    parser.add_argument('--alias', type=str, default="staging", help="The alias of the model to use (e.g., 'staging', 'production').")
     parser.add_argument('--image', type=str, help="Optional: Path to a specific image file.")
     args = parser.parse_args()
     

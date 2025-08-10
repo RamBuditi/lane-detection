@@ -23,3 +23,10 @@ models/**/*.pth
 
 mlruns/
 outputs/
+
+# Metaflow artifacts and metadata
+.metaflow/
+.metaflowconfig/
+metaflow_runs/
+*.metaflow
+.metaflow_*

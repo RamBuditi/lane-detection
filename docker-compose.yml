@@ -8,6 +8,8 @@ services:
         - UID=${UID}
         - GID=${GID}
     user: "${UID}:${GID}"
+    environment:
+      - USERNAME=${USER}
     volumes:
       - .:/app
     ports:
