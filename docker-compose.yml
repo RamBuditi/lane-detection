@@ -4,6 +4,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:  
+        - UID=${UID}
+        - GID=${GID}
+    user: "${UID}:${GID}"
     volumes:
       - .:/app
     shm_size: '2gb'
