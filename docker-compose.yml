@@ -12,8 +12,9 @@ services:
       - USERNAME=${USER}
     volumes:
       - .:/app
+      - ./dvc-storage:/app/dvc-storage  # Persistent DVC storage for champion models
     ports:
-      - "5000:5000"  # Add this line for MLflow UI
+      - "5000:5000"  # MLflow UI port
     shm_size: '2gb'
     stdin_open: true
     tty: true

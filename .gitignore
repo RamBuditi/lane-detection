@@ -30,3 +30,6 @@ outputs/
 metaflow_runs/
 *.metaflow
 .metaflow_*
+
+# Pipeline reports
+pipeline_report_*.json

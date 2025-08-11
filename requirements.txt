@@ -4,5 +4,6 @@ dvc
 fastapi
 uvicorn
 python-multipart
+pylint
 metaflow
 evidently
