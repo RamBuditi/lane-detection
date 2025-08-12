@@ -23,5 +23,6 @@ dependencies:
   
   # Install opencv via pip instead to avoid conflicts
   - pip:
-    - opencv-python
+    - opencv-python-headless
     - numpy
+    - albumentations

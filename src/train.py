@@ -7,8 +7,11 @@ import numpy as np
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
+import json
 
-# --- Dataset Class (with fraction parameter) ---
+import mlflow
+import mlflow.pytorch
+
 class CulaneDataset(Dataset):
     def __init__(self, data_root, list_path, transform=None, fraction=1.0):
         self.data_root = data_root
@@ -40,75 +43,190 @@ class CulaneDataset(Dataset):
         label = label.long()
         return {"image": image, "label": label}
 
-# --- Main Training Function ---
 def main():
-    # --- 1. Hyperparameters for Baseline Training ---
+    # --- 1. Hyperparameters ---
     DATA_ROOT = 'data/CULane'
     LIST_PATH = 'list/train_gt.txt'
     IMG_HEIGHT = 288
     IMG_WIDTH = 800
     NUM_CLASSES = 5
     BATCH_SIZE = 4
-    NUM_WORKERS = 2
-    LEARNING_RATE = 1e-4
-    NUM_EPOCHS = 2      # Train for 2 full epochs
-    TRAIN_FRACTION = 0.05 # Use 5% of the data
+    NUM_WORKERS = 4
+    LEARNING_RATE = 2e-5
+    NUM_EPOCHS = 1
+    TRAIN_FRACTION = 0.01
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- 3. Transformations and Dataset ---
-    train_transforms = A.Compose([
-        A.Resize(height=IMG_HEIGHT, width=IMG_WIDTH),
-        A.HorizontalFlip(p=0.5),
-        A.RandomBrightnessContrast(p=0.2),
-        A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ToTensorV2(),
-    ])
+    # Configure MLflow tracking URI (add this)
+    mlflow_dir = os.path.abspath("./mlruns")
+    os.makedirs(mlflow_dir, exist_ok=True)
+    mlflow.set_tracking_uri(f"file://{mlflow_dir}")
     
-    dataset = CulaneDataset(
-        data_root=DATA_ROOT,
-        list_path=LIST_PATH,
-        transform=train_transforms,
-        fraction=TRAIN_FRACTION
-    )
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
-
-    # --- 4. Model, Optimizer, and Loss Function ---
-    print("Loading pre-trained DeepLabV3 model...")
-    model = torchvision.models.segmentation.deeplabv3_resnet50(weights='DeepLabV3_ResNet50_Weights.DEFAULT')
-    model.classifier[4] = torch.nn.Conv2d(256, NUM_CLASSES, kernel_size=(1, 1), stride=(1, 1))
-    model.to(device)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    loss_fn = torch.nn.CrossEntropyLoss()
-
-    # --- 5. The Training Loop ---
-    print("\nStarting baseline training run...")
-    for epoch in range(NUM_EPOCHS):
-        model.train()
-        loop = tqdm(dataloader, desc=f"Epoch [{epoch+1}/{NUM_EPOCHS}]")
-        total_loss = 0.0
-
-        for batch in loop:
-            images = batch['image'].to(device)
-            labels = batch['label'].to(device)
-            outputs = model(images)['out']
-            loss = loss_fn(outputs, labels)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-            loop.set_postfix(loss=loss.item())
+    mlflow.set_experiment("Lane Detection - CULane")
+    with mlflow.start_run() as run:
+        run_id = run.info.run_id
+        print(f"MLflow Run ID: {run_id}")
         
-        avg_loss = total_loss / len(dataloader)
-        print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] - Average Loss: {avg_loss:.4f}")
+        mlflow.log_params({
+            "learning_rate": LEARNING_RATE, "epochs": NUM_EPOCHS, "batch_size": BATCH_SIZE,
+            "num_workers": NUM_WORKERS, "train_fraction": TRAIN_FRACTION, "img_height": IMG_HEIGHT,
+            "img_width": IMG_WIDTH, "model_architecture": "DeepLabV3-ResNet50", "dataset": "CULane"
+        })
 
-    # --- 6. Save the Trained Model ---
-    print("\nTraining complete. Saving model...")
-    MODEL_SAVE_PATH = "models/culane_deeplabv3_baseline.pth"
-    torch.save(model.state_dict(), MODEL_SAVE_PATH)
-    print(f"Model saved to {MODEL_SAVE_PATH}")
+        # --- 3. Transformations and Dataset ---
+        train_transforms = A.Compose([
+            A.Resize(height=IMG_HEIGHT, width=IMG_WIDTH),
+            A.HorizontalFlip(p=0.5),
+            A.RandomBrightnessContrast(p=0.2),
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ToTensorV2(),
+        ])
+        dataset = CulaneDataset(data_root=DATA_ROOT, list_path=LIST_PATH, transform=train_transforms, fraction=TRAIN_FRACTION)
+        dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
+
+        # --- 4. Model, Optimizer, and Loss Function ---
+        print("Loading pre-trained DeepLabV3 model...")
+        model = torchvision.models.segmentation.deeplabv3_resnet50(weights='DeepLabV3_ResNet50_Weights.DEFAULT')
+        model.classifier[4] = torch.nn.Conv2d(256, NUM_CLASSES, kernel_size=(1, 1), stride=(1, 1))
+        model.to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+        loss_fn = torch.nn.CrossEntropyLoss()
+
+        # --- 5. The Training Loop ---
+        print("\nStarting baseline training run...")
+        for epoch in range(NUM_EPOCHS):
+            model.train()
+            loop = tqdm(dataloader, desc=f"Epoch [{epoch+1}/{NUM_EPOCHS}]")
+            total_loss = 0.0
+            for batch in loop:
+                images = batch['image'].to(device)
+                labels = batch['label'].to(device)
+                outputs = model(images)['out']
+                loss = loss_fn(outputs, labels)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                loop.set_postfix(loss=loss.item())
+            avg_loss = total_loss / len(dataloader)
+            print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] - Average Loss: {avg_loss:.4f}")
+            mlflow.log_metric("avg_train_loss", avg_loss, step=epoch)
+        
+
+        # --- 6. Save the Trained Model ---
+        print("\nTraining complete. Saving model...")
+        MODEL_SAVE_PATH = "models/latest_model_run.pth"
+        os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
+        torch.save(model.state_dict(), MODEL_SAVE_PATH)
+        print(f"Model saved successfully to {MODEL_SAVE_PATH}")
+
+        # --- 7. ENHANCED MLFLOW INTEGRATION ---
+        print("Preparing comprehensive MLflow logging...")
+        
+        try:
+            # Create a wrapper class that returns only the 'out' tensor
+            class DeepLabV3Wrapper(torch.nn.Module):
+                def __init__(self, model):
+                    super().__init__()
+                    self.model = model
+                
+                def forward(self, x):
+                    return self.model(x)['out']
+            
+            # Move model to CPU and wrap it
+            model.cpu()
+            model.eval()
+            wrapped_model = DeepLabV3Wrapper(model)
+            wrapped_model.eval()
+            
+            # Get a sample batch and prepare input example on CPU
+            sample_batch = next(iter(dataloader))
+            input_example = sample_batch['image'][0:1].cpu().float()
+            
+            # Test the wrapped model first to ensure it works
+            with torch.no_grad():
+                test_output = wrapped_model(input_example)
+                print(f"Model wrapper test successful. Output shape: {test_output.shape}")
+            
+            # Log the MLflow model
+            print("Logging MLflow model...")
+            mlflow.pytorch.log_model(
+                wrapped_model,
+                name="model",  # This creates the main model artifact
+                input_example=input_example.numpy()
+            )
+            print("✅ MLflow model logged successfully")
+            
+            # Log the original model state dict as an artifact
+            mlflow.log_artifact(MODEL_SAVE_PATH, artifact_path="model_files")
+            print("✅ Model state dict logged as artifact")
+            
+            # Log run information as artifact
+            info_file = "run_info.txt"
+            with open(info_file, "w") as f:
+                f.write(f"Run ID: {run_id}\n")
+                f.write(f"Model Architecture: DeepLabV3-ResNet50\n")
+                f.write(f"Dataset: CULane ({TRAIN_FRACTION*100}% of data)\n")
+                f.write(f"Average Loss: {avg_loss:.4f}\n")
+                f.write(f"Device: {device}\n")
+                f.write(f"Input Shape: {input_example.shape}\n")
+                f.write(f"Output Shape: {test_output.shape}\n")
+            
+            mlflow.log_artifact(info_file, artifact_path="run_info")
+            os.remove(info_file)
+            print("✅ Run info logged as artifact")
+            
+            # Log hyperparameters as JSON artifact
+            hyperparams = {
+                "learning_rate": LEARNING_RATE,
+                "epochs": NUM_EPOCHS,
+                "batch_size": BATCH_SIZE,
+                "num_workers": NUM_WORKERS,
+                "img_height": IMG_HEIGHT,
+                "img_width": IMG_WIDTH,
+                "train_fraction": TRAIN_FRACTION,
+                "num_classes": NUM_CLASSES,
+                "data_root": DATA_ROOT,
+                "list_path": LIST_PATH
+            }
+            
+            hyperparams_file = "hyperparameters.json"
+            with open(hyperparams_file, "w") as f:
+                json.dump(hyperparams, f, indent=2)
+            
+            mlflow.log_artifact(hyperparams_file, artifact_path="config")
+            os.remove(hyperparams_file)
+            print("✅ Hyperparameters logged as artifact")
+            
+            # Log model architecture summary
+            arch_file = "model_architecture.txt"
+            with open(arch_file, "w") as f:
+                f.write("Model Architecture Summary\n")
+                f.write("=" * 30 + "\n")
+                f.write(f"Base Model: DeepLabV3 with ResNet50 backbone\n")
+                f.write(f"Input Channels: 3 (RGB)\n")
+                f.write(f"Output Classes: {NUM_CLASSES}\n")
+                f.write(f"Input Resolution: {IMG_HEIGHT} x {IMG_WIDTH}\n")
+                f.write(f"Output Resolution: {test_output.shape[-2]} x {test_output.shape[-1]}\n")
+                f.write("\nModel Structure:\n")
+                f.write(str(wrapped_model))
+            
+            mlflow.log_artifact(arch_file, artifact_path="model_info")
+            os.remove(arch_file)
+            print("✅ Model architecture logged as artifact")
+            
+            # Move original model back to device
+            model.to(device)
+            
+        except Exception as e:
+            print(f"❌ Error during MLflow logging: {e}")
+            raise
+        
+        print(f"\n🎉 Complete MLflow logging finished!")
+        print(f"📁 Run ID: {run_id}")
+        print(f"🌐 View in MLflow UI: http://localhost:5000")
 
 if __name__ == "__main__":
     main()

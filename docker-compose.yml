@@ -4,8 +4,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:  
+        - UID=${UID}
+        - GID=${GID}
+    user: "${UID}:${GID}"
+    environment:
+      - USERNAME=${USER}
     volumes:
       - .:/app
+      - ./dvc-storage:/app/dvc-storage  # Persistent DVC storage for champion models
+    ports:
+      - "5000:5000"  # MLflow UI port
+    shm_size: '2gb'
     stdin_open: true
     tty: true
     deploy:

@@ -20,3 +20,16 @@ models/**/*.pth
 # But DO NOT ignore the DVC pointer files or placeholder .gitignore files
 !models/**/*.dvc
 !models/**/.gitignore
+
+mlruns/
+outputs/
+
+# Metaflow artifacts and metadata
+.metaflow/
+.metaflowconfig/
+metaflow_runs/
+*.metaflow
+.metaflow_*
+
+# Pipeline reports
+pipeline_report_*.json

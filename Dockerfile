@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     bzip2 \
     ca-certificates \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -41,13 +43,27 @@ SHELL ["conda", "run", "-n", "lane-detection", "/bin/bash", "-c"]
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# 10. Initialize the bash shell for Conda, THEN add the auto-activate command.
-RUN conda init bash && \
-    echo "conda activate lane-detection" >> /root/.bashrc
+# 10. Create a non-root user that matches the host's UID/GID
+ARG UID
+ARG GID
+RUN groupadd -g $GID -o shadowz && \
+    useradd -m -u $UID -g $GID -s /bin/bash shadowz
 
-# 11. Copy all your project code into the container
+# 11. Switch to the new user and initialize conda FOR THEM
+USER shadowz
+RUN conda init bash && \
+    echo "conda activate lane-detection" >> /home/shadowz/.bashrc
+
+# 12. Switch back to root user for final operations
+USER root
+
+# 13. Copy all your project code into the container
+# Copying as root ensures files are owned by root, then container starts as non-root
 COPY . .
 
-# 12. Expose a port and set a default command
+# 14. Set ownership of the app directory to the non-root user
+RUN chown -R shadowz:shadowz /app
+
+# 15. Expose a port and set a default command
 EXPOSE 8000
 CMD ["tail", "-f", "/dev/null"]
