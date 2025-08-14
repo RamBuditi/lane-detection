@@ -21,21 +21,11 @@ This repository contains a complete, end-to-end MLOps pipeline for training, eva
 Here is a sample of the model's output, detecting multiple lanes in a test image.
 <img width="2400" height="800" alt="image" src="https://github.com/user-attachments/assets/00a5ce25-4ae3-44cc-9969-58e0752aa339" />
 
-
-*(**Suggestion:** Create a GIF showing an input image/video on the left and the model's output with segmentation masks on the right.)*
-
 ## 🏗️ MLOps Architecture
 
 The project follows a modern MLOps architecture that separates concerns and automates the flow of data and models from experimentation to a production-ready state.
 
-`[INSERT_ARCHITECTURE_DIAGRAM_HERE]`
-
-*(**Suggestion:** Create a diagram that shows the following flow:*
-*1. **Data:** DVC pointing to cloud storage for the CULane dataset.*
-*2. **Indexing:** The `create_db.py` script reads the DVC-tracked data and populates a central `lanes_dataset.db` (SQLite).*
-*3. **Orchestration (Metaflow):** A box showing the Metaflow pipeline with its key steps (`validate`, `hyperparameter_tuning`, `train`, `evaluate`, `model_registry_management`).*
-*4. **Tracking & Registry (MLflow):** The Metaflow pipeline communicates with MLflow throughout the process, logging parameters, metrics, and registering the final model.*
-*5. **Inference:** The `inference.py` script shows how a final, versioned model can be loaded from the MLflow registry for use.)*
+<img width="895" height="612" alt="image" src="https://github.com/user-attachments/assets/220b5e74-15fb-4a5e-99b4-8b3382dc6457" />
 
 ## 🔧 Tech Stack
 
