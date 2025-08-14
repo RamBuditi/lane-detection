@@ -19,8 +19,8 @@ This repository contains a complete, end-to-end MLOps pipeline for training, eva
 ## 🚀 Live Demo
 
 Here is a sample of the model's output, detecting multiple lanes in a test image.
+<img width="2400" height="800" alt="image" src="https://github.com/user-attachments/assets/00a5ce25-4ae3-44cc-9969-58e0752aa339" />
 
-`[INSERT_DEMO_GIF_HERE]`
 
 *(**Suggestion:** Create a GIF showing an input image/video on the left and the model's output with segmentation masks on the right.)*
 
