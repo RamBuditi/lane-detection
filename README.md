@@ -98,9 +98,8 @@ docker run --gpus all -v "$(pwd):/app" lane-detection-env \
     --max-combinations=8
 ```
 
-`[INSERT_TERMINAL_OUTPUT_SCREENSHOT_HERE]`
+<img width="1918" height="974" alt="image" src="https://github.com/user-attachments/assets/ac95862e-451f-4a10-b2f4-9fc167ed6700" />
 
-*(**Suggestion:** Add a screenshot showing the terminal output of a successful Metaflow run, highlighting the final "🎉 Enhanced Pipeline Completed Successfully!" message.)*
 
 ## 📊 Exploring the Results with MLflow
 
