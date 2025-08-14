@@ -118,15 +118,13 @@ MLflow is used to track all experiments. You can launch the MLflow UI to view an
 
 ### Experiment Comparison
 
-`[INSERT_MLFLOW_EXPERIMENT_UI_SCREENSHOT_HERE]`
+<img width="1918" height="1079" alt="image" src="https://github.com/user-attachments/assets/eed48dd1-3b5c-4745-aaaf-42c7633c0773" />
 
-*(**Suggestion:** Add a screenshot of the MLflow experiment view, showing a few different runs with their parameters (like `learning_rate`) and metrics (like `best_val_miou`).)*
 
 ### Model Registry
 
-`[INSERT_MLFLOW_REGISTRY_UI_SCREENSHOT_HERE]`
+<img width="1912" height="1079" alt="image" src="https://github.com/user-attachments/assets/56d7a3be-71fb-4ade-835e-13d2b448a1ce" />
 
-*(**Suggestion:** Add a screenshot of the MLflow Model Registry page, showing a registered `culane-lane-detector` model with its different versions and assigned aliases like "staging" or "production".)*
 
 ## 📂 Project Structure
 
