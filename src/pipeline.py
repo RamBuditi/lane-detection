@@ -6,6 +6,7 @@ import json
 import textwrap 
 import mlflow
 from mlflow.tracking import MlflowClient
+from mlflow.exceptions import MlflowException
 
 class EnhancedLaneDetectionPipeline(FlowSpec):
     """
@@ -124,43 +125,47 @@ class EnhancedLaneDetectionPipeline(FlowSpec):
         if not self.run_hyperparameter_tuning:
             print(">>> Skipping hyperparameter tuning as per parameters.")
             self.best_hyperparams = None
+            self.tuning_results = []
             self.next(self.train_model)
             return
 
         print(">>> Running hyperparameter tuning logic.")
         
-        # FIX: Use textwrap.dedent to remove leading whitespace automatically.
-        # This robustly fixes the IndentationError.
-        tuning_script = textwrap.dedent(f"""
-            from src.hyperparameter_tuning import HyperparameterTuner
-            tuner = HyperparameterTuner(max_workers=2, gpu_memory_fraction=0.4)
-            results = tuner.run_parallel_tuning(max_combinations={self.max_tuning_combinations})
-            best_params = tuner.get_best_params()
-            print(f"BEST_PARAMS_JSON: {{repr(best_params)}}")
-        """)
+        try:
+            # Import the fixed hyperparameter tuning module
+            from hyperparameter_tuning import SimplifiedHyperparameterTuner, TuningConfig
+            
+            # Create configuration optimized for your setup
+            config = TuningConfig(
+                max_workers=2,
+                gpu_memory_fraction=0.3,  # Conservative for RTX 4060
+                max_combinations=self.max_tuning_combinations,
+                timeout_minutes=8
+            )
+            
+            # Create tuner and run
+            tuner = SimplifiedHyperparameterTuner(config)
+            self.tuning_results = tuner.run_parallel_tuning()
+            
+            # Get best parameters
+            self.best_hyperparams = tuner.get_best_params()
+            
+            if self.best_hyperparams:
+                print(f"✅ Best hyperparameters found: {self.best_hyperparams}")
+                
+                # Save for future use
+                with open("best_hyperparameters.json", "w") as f:
+                    json.dump(self.best_hyperparams, f, indent=2)
+            else:
+                print("⚠️ Hyperparameter tuning did not yield a best set of parameters.")
+                self.best_hyperparams = None
+            
+        except Exception as e:
+            print(f"❌ Hyperparameter tuning failed: {e}")
+            print("📝 Continuing with default parameters...")
+            self.best_hyperparams = None
+            self.tuning_results = []
 
-        cmd = ["python", "-c", tuning_script]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        
-        if result.returncode != 0:
-            print("❌ Hyperparameter tuning failed!")
-            print("STDERR:", result.stderr)
-            print("STDOUT:", result.stdout)
-            self.best_hyperparams = None # Continue without best params
-        else:
-            print(result.stdout)
-            for line in result.stdout.splitlines():
-                if line.startswith("BEST_PARAMS_JSON:"):
-                    params_str = line.split("BEST_PARAMS_JSON:", 1)[1].strip()
-                    try:
-                        self.best_hyperparams = eval(params_str)
-                        print(f"✅ Best hyperparameters extracted: {self.best_hyperparams}")
-                    except Exception as e:
-                        print(f"⚠️ Could not parse best parameters: {e}")
-                        self.best_hyperparams = None
-                    break
-        
         self.next(self.train_model)
     
     @step
@@ -253,165 +258,260 @@ class EnhancedLaneDetectionPipeline(FlowSpec):
     
     @step
     def model_registry_management(self):
-        """Enhanced model registry management with aliases"""
-        print("--- Step: Model Registry Management ---")
+        """Comprehensive model registry management - PIPELINE HANDLES THIS"""
+        print("--- Step: Model Registry Management (Pipeline-Controlled) ---")
         
         try:
-            # Initialize MLflow client
             client = MlflowClient()
             
-            # Check if model is already registered
-            model_name = "culane-lane-detector"
+            # Get comprehensive run data
+            run = client.get_run(self.run_id)
+            metrics = run.data.metrics
+            params = run.data.params
             
-            try:
-                # Get the latest version
-                latest_versions = client.get_latest_versions(model_name)
-                if latest_versions:
-                    latest_version = max([int(v.version) for v in latest_versions])
-                    print(f"📦 Found existing model versions up to v{latest_version}")
-                else:
-                    print("📦 No existing model versions found")
-            except Exception as e:
-                print(f"📦 Model registry is empty or model not found: {e}")
+            # Extract all relevant metrics
+            final_train_loss = metrics.get("final_train_loss", float('inf'))
+            best_val_miou = metrics.get("best_val_miou", 0.0)
+            final_val_miou = metrics.get("final_val_miou", 0.0)
             
-            # Get the model version that was auto-registered during training
+            print(f"📊 Training Metrics Retrieved:")
+            print(f"   • Final Train Loss: {final_train_loss:.4f}")
+            print(f"   • Best Val mIoU: {best_val_miou:.4f}")
+            print(f"   • Final Val mIoU: {final_val_miou:.4f}")
+            
+            # Use best available mIoU for decisions
+            decision_miou = max(best_val_miou, final_val_miou)
+            
+            # Create comprehensive model metadata
+            timestamp = int(time.time())
+            
+            # Determine performance tier
+            if decision_miou >= self.promotion_threshold * 1.5:
+                tier = "production"
+                alias = "production"
+                status = "ready-for-deployment"
+            elif decision_miou >= self.promotion_threshold:
+                tier = "staging"
+                alias = "staging"
+                status = "ready-for-testing"
+            else:
+                tier = "development"
+                alias = "development" 
+                status = "needs-improvement"
+            
+            # Create descriptive model name
+            tuning_indicator = "tuned" if self.best_hyperparams else "baseline"
+            unique_model_name = f"culane-detector-{tier}-{tuning_indicator}-{timestamp}"
+            
+            print(f"🏗️ Creating model: {unique_model_name}")
+            print(f"📈 Performance tier: {tier}")
+            print(f"🎯 Status: {status}")
+            
+            # Register model with comprehensive metadata
             model_uri = f"runs:/{self.run_id}/model"
             
-            # Register or update model version
+            # Create rich description
+            description = f"""
+            🚗 CULane Detection Model - {tier.title()} Grade
+
+            📊 PERFORMANCE METRICS:
+            • Best mIoU: {best_val_miou:.4f}
+            • Final mIoU: {final_val_miou:.4f} 
+            • Training Loss: {final_train_loss:.4f}
+            • Meets Threshold ({self.promotion_threshold:.2f}): {"✅ Yes" if decision_miou >= self.promotion_threshold else "❌ No"}
+
+            🔧 CONFIGURATION:
+            • Hyperparameter Tuning: {"✅ Applied" if self.best_hyperparams else "❌ Not Applied"}
+            • Optimizer: {params.get('optimizer', 'Unknown')}
+            • Learning Rate: {params.get('learning_rate', 'Unknown')}
+            • Batch Size: {params.get('batch_size', 'Unknown')}
+            • Training Epochs: {params.get('num_epochs', 'Unknown')}
+
+            🏷️ METADATA:
+            • Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}
+            • Pipeline Run: Enhanced MLOps Pipeline
+            • MLflow Run: {self.run_id}
+            • Model URI: {model_uri}
+
+            🎯 DEPLOYMENT STATUS: {status}
+            """.strip()
+            
+            # Register the model
+            model_version = client.create_model_version(
+                name=unique_model_name,
+                source=model_uri,
+                description=description
+            )
+            
+            version_number = model_version.version
+            print(f"✅ Registered: {unique_model_name} v{version_number}")
+            
+            # Wait for model to be ready (sometimes needed)
+            print("⏳ Waiting for model version to be ready...")
+            time.sleep(3)
+            
+            # Set alias
             try:
-                mv = mlflow.register_model(model_uri, model_name)
-                model_version = mv.version
-                print(f"✅ Model registered as version {model_version}")
-                
-                # Set model version description
-                description = f"Lane detection model trained with {'tuned' if self.best_hyperparams else 'default'} hyperparameters. mIoU: {self.eval_miou:.4f}"
-                client.update_model_version(
-                    name=model_name,
-                    version=model_version,
-                    description=description
+                client.set_registered_model_alias(
+                    name=unique_model_name,
+                    alias=alias,
+                    version=version_number
                 )
-                
-                # Manage aliases based on performance
-                if self.eval_miou > self.promotion_threshold:
-                    # Promote to staging
-                    client.set_registered_model_alias(
-                        name=model_name,
-                        alias="staging",
-                        version=model_version
+                print(f"🏷️ Applied alias: {alias}")
+            except Exception as alias_error:
+                print(f"⚠️ Could not set alias: {alias_error}")
+            
+            # Add comprehensive tags
+            tags = {
+                "pipeline_generated": "true",
+                "performance_tier": tier,
+                "deployment_status": status,
+                "miou_score": f"{decision_miou:.4f}",
+                "training_loss": f"{final_train_loss:.4f}",
+                "hyperparameter_tuned": str(self.best_hyperparams is not None).lower(),
+                "promotion_threshold": str(self.promotion_threshold),
+                "meets_threshold": str(decision_miou >= self.promotion_threshold).lower(),
+                "pipeline_timestamp": str(timestamp),
+                "model_architecture": "DeepLabV3_ResNet50",
+                "dataset": "CULane"
+            }
+            
+            for key, value in tags.items():
+                try:
+                    client.set_model_version_tag(
+                        name=unique_model_name,
+                        version=version_number,
+                        key=key,
+                        value=value
                     )
-                    print(f"🚀 Model promoted to 'staging' alias")
+                except Exception as tag_error:
+                    print(f"⚠️ Could not set tag {key}: {tag_error}")
+            
+            # Set model version stage for MLflow UI
+            try:
+                stage_mapping = {
+                    "production": "Production",
+                    "staging": "Staging", 
+                    "development": "None"
+                }
+                
+                if tier in stage_mapping and stage_mapping[tier] != "None":
+                    client.transition_model_version_stage(
+                        name=unique_model_name,
+                        version=version_number,
+                        stage=stage_mapping[tier],
+                        archive_existing_versions=False
+                    )
+                    print(f"📋 Set stage: {stage_mapping[tier]}")
                     
-                    # If performance is really good, consider for production
-                    if self.eval_miou > self.promotion_threshold * 1.5:
-                        client.set_registered_model_alias(
-                            name=model_name,
-                            alias="production",
-                            version=model_version
-                        )
-                        print(f"🌟 Model promoted to 'production' alias")
-                        self.promotion_status = "production"
-                    else:
-                        self.promotion_status = "staging"
-                else:
-                    # Set as development/testing
-                    client.set_registered_model_alias(
-                        name=model_name,
-                        alias="development",
-                        version=model_version
-                    )
-                    print(f"🔧 Model tagged as 'development' alias")
-                    self.promotion_status = "development"
-                
-                self.model_version = model_version
-                
-            except Exception as e:
-                print(f"❌ Error with model registry: {e}")
-                self.promotion_status = "failed"
-                self.model_version = None
-        
+            except Exception as stage_error:
+                print(f"⚠️ Could not set stage: {stage_error}")
+            
+            # Store results for pipeline
+            self.model_name = unique_model_name
+            self.model_version = version_number
+            self.model_alias = alias
+            self.promotion_status = status
+            self.eval_miou = decision_miou
+            self.model_uri = f"models:/{unique_model_name}@{alias}"
+            
+            # Verify registration
+            try:
+                registered_model = client.get_registered_model(unique_model_name)
+                print(f"✅ Verification: Model {unique_model_name} exists with {len(registered_model.latest_versions)} versions")
+            except Exception as verify_error:
+                print(f"⚠️ Could not verify registration: {verify_error}")
+            
+            # Print comprehensive summary
+            print(f"\n{'='*60}")
+            print(f"📦 MODEL REGISTRY SUMMARY")
+            print(f"{'='*60}")
+            print(f"🏷️ Model Name: {unique_model_name}")
+            print(f"📋 Version: {version_number}")
+            print(f"🎯 Alias: {alias}")
+            print(f"📊 mIoU Score: {decision_miou:.4f}")
+            print(f"🚀 Status: {status}")
+            print(f"🔗 URI: {self.model_uri}")
+            print(f"📁 MLflow Run: {self.run_id}")
+            
+            if decision_miou >= self.promotion_threshold:
+                print(f"🎉 MODEL PROMOTION: SUCCESS!")
+                print(f"   Ready for: {'Production Deployment' if tier == 'production' else 'Staging Testing'}")
+            else:
+                print(f"⚠️ MODEL PROMOTION: NEEDS IMPROVEMENT")
+                print(f"   Threshold: {self.promotion_threshold:.3f}, Achieved: {decision_miou:.3f}")
+                print(f"   Recommendations: Increase training epochs, tune hyperparameters, use more data")
+            
         except Exception as e:
             print(f"❌ Model registry management failed: {e}")
-            self.promotion_status = "failed"
+            import traceback
+            print(f"Full error: {traceback.format_exc()}")
+            
+            # Set failure state
+            self.model_name = None
             self.model_version = None
+            self.model_alias = None
+            self.promotion_status = "failed"
+            self.eval_miou = 0.0
+            self.model_uri = None
         
         self.next(self.generate_model_report)
-    
+
     @step
     def generate_model_report(self):
-        """Generate comprehensive model and pipeline report"""
-        print("--- Step: Generating Comprehensive Report ---")
+        """Enhanced model report with registry information"""
+        print("--- Step: Comprehensive Model & Registry Report ---")
         
-        try:
-            # Generate Evidently AI report for model monitoring
-            report_cmd = [
-                "python", "-c",
-                f"""
-import evidently
-from evidently import ColumnMapping
-from evidently.report import Report
-from evidently.metric_suite import MetricSuite
-from evidently.metrics import *
-import pandas as pd
-import json
-
-# Create a simple performance report
-performance_data = {{
-    'run_id': '{self.run_id}',
-    'mIoU': {self.eval_miou},
-    'promotion_threshold': {self.promotion_threshold},
-    'meets_threshold': {self.eval_miou > self.promotion_threshold},
-    'hyperparams_tuned': {self.best_hyperparams is not None}
-}}
-
-# Save performance data
-with open('model_performance.json', 'w') as f:
-    json.dump(performance_data, f, indent=2)
-
-print("Model performance report generated")
-"""
-            ]
-            
-            result = subprocess.run(report_cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                print("✅ Evidently report generated")
-            else:
-                print("⚠️ Could not generate Evidently report, creating basic report")
-        
-        except Exception as e:
-            print(f"⚠️ Report generation had issues: {e}")
-        
-        # Create comprehensive pipeline report
+        # Generate comprehensive report
         pipeline_duration = time.time() - self.pipeline_start_time
         
+        # Create the most comprehensive report
         self.comprehensive_report = {
-            "pipeline_info": {
-                "pipeline_id": "enhanced-lane-detection",
+            "pipeline_execution": {
+                "pipeline_id": f"enhanced-lane-detection-{int(self.pipeline_start_time)}",
                 "start_time": self.pipeline_start_time,
                 "duration_seconds": pipeline_duration,
-                "duration_formatted": f"{pipeline_duration/60:.1f} minutes"
+                "duration_formatted": f"{pipeline_duration/60:.1f} minutes",
+                "success": self.promotion_status != "failed"
             },
+            
             "hyperparameter_tuning": {
                 "enabled": self.run_hyperparameter_tuning,
                 "max_combinations_tested": self.max_tuning_combinations if self.run_hyperparameter_tuning else 0,
                 "best_params_found": self.best_hyperparams is not None,
+                "tuning_successful": self.best_hyperparams is not None if self.run_hyperparameter_tuning else None,
                 "best_hyperparameters": self.best_hyperparams
             },
-            "model_performance": {
+            
+            "training_results": {
                 "mlflow_run_id": self.run_id,
-                "mIoU": self.eval_miou,
+                "training_completed": True,
+                "hyperparameter_source": "tuned" if self.best_hyperparams else "default"
+            },
+            
+            "model_performance": {
+                "miou_score": self.eval_miou,
                 "promotion_threshold": self.promotion_threshold,
-                "meets_threshold": self.eval_miou > self.promotion_threshold,
-                "performance_category": "excellent" if self.eval_miou > self.promotion_threshold * 1.5 
-                                        else "good" if self.eval_miou > self.promotion_threshold 
-                                        else "needs_improvement"
+                "meets_threshold": self.eval_miou >= self.promotion_threshold,
+                "performance_category": (
+                    "excellent" if self.eval_miou >= self.promotion_threshold * 1.5
+                    else "good" if self.eval_miou >= self.promotion_threshold
+                    else "needs_improvement"
+                )
             },
+            
             "model_registry": {
-                "promotion_status": self.promotion_status,
+                "registration_successful": self.model_name is not None,
+                "model_name": self.model_name,
                 "model_version": self.model_version,
-                "registry_name": "culane-lane-detector"
+                "model_alias": self.model_alias,
+                "promotion_status": self.promotion_status,
+                "model_uri": self.model_uri,
+                "deployment_ready": self.promotion_status in ["ready-for-deployment", "ready-for-testing"]
             },
+            
             "system_info": {
-                "gpu_optimizations": getattr(self, 'gpu_optimizations', False),
+                "gpu_optimizations_applied": getattr(self, 'gpu_optimizations', False),
                 "pipeline_parameters": {
                     "run_hyperparameter_tuning": self.run_hyperparameter_tuning,
                     "max_tuning_combinations": self.max_tuning_combinations,
@@ -419,60 +519,91 @@ print("Model performance report generated")
                     "use_best_params": self.use_best_params
                 }
             },
+            
+            "next_steps": self._generate_next_steps(),
             "recommendations": self._generate_recommendations()
         }
         
         # Save comprehensive report
-        report_file = f"comprehensive_pipeline_report_{int(time.time())}.json"
+        report_file = f"pipeline_report_{int(time.time())}.json"
         with open(report_file, 'w') as f:
-            json.dump(self.comprehensive_report, f, indent=2)
+            json.dump(self.comprehensive_report, f, indent=2, default=str)
         
         print(f"📄 Comprehensive report saved: {report_file}")
         
+        # Also create a human-readable summary
+        self._create_human_readable_summary()
+        
         self.next(self.end)
     
-    def _generate_recommendations(self):
-        """Generate actionable recommendations based on results"""
-        recommendations = []
+    def _generate_next_steps(self):
+        """Generate specific next steps based on results"""
+        steps = []
         
-        if self.eval_miou <= self.promotion_threshold:
-            recommendations.append({
-                "priority": "high",
-                "category": "performance",
-                "message": f"Model performance ({self.eval_miou:.4f}) below threshold ({self.promotion_threshold})",
-                "actions": [
-                    "Increase training epochs",
-                    "Use larger train_fraction",
-                    "Try different augmentation strategies",
-                    "Consider ensemble methods"
-                ]
-            })
+        if self.model_uri:
+            steps.append(f"Test model inference: python src/inference.py --model-uri {self.model_uri}")
+            
+        if self.promotion_status == "ready-for-deployment":
+            steps.extend([
+                "Deploy model to production environment",
+                "Set up model monitoring and alerting",
+                "Configure automated retraining pipeline"
+            ])
+        elif self.promotion_status == "ready-for-testing":
+            steps.extend([
+                "Deploy model to staging environment",
+                "Run comprehensive testing suite",
+                "Perform A/B testing against current production model"
+            ])
+        else:
+            steps.extend([
+                "Improve model performance through additional training",
+                "Run hyperparameter tuning if not already done",
+                "Consider data augmentation or additional training data"
+            ])
+            
+        steps.append(f"View detailed results: http://localhost:5000")
+        steps.append("Monitor training runs in MLflow UI")
         
-        if not self.run_hyperparameter_tuning and not self.best_hyperparams:
-            recommendations.append({
-                "priority": "medium",
-                "category": "optimization",
-                "message": "No hyperparameter tuning performed",
-                "actions": [
-                    "Run hyperparameter tuning with --tune-hyperparams",
-                    "Experiment with different optimizers",
-                    "Try learning rate scheduling"
-                ]
-            })
+        return steps
+    
+    def _create_human_readable_summary(self):
+        """Create a human-readable markdown summary"""
+        summary_content = f"""
+        # Lane Detection Pipeline Report
+
+        ## 🎯 Executive Summary
+        - **Pipeline Status**: {"✅ SUCCESS" if self.promotion_status != "failed" else "❌ FAILED"}
+        - **Model Performance**: {self.eval_miou:.4f} mIoU {"(Meets Threshold ✅)" if self.eval_miou >= self.promotion_threshold else "(Below Threshold ⚠️)"}
+        - **Deployment Status**: {self.promotion_status}
+
+        ## 📊 Performance Details
+        - **mIoU Score**: {self.eval_miou:.4f}
+        - **Threshold**: {self.promotion_threshold:.3f}
+        - **Performance Tier**: {self.comprehensive_report['model_performance']['performance_category']}
+
+        ## 🔧 Configuration
+        - **Hyperparameter Tuning**: {"✅ Enabled" if self.run_hyperparameter_tuning else "❌ Disabled"}
+        - **Best Parameters Found**: {"✅ Yes" if self.best_hyperparams else "❌ No"}
+
+        ## 📦 Model Registry
+        - **Model Name**: `{self.model_name or 'Not registered'}`
+        - **Version**: {self.model_version or 'N/A'}
+        - **Alias**: `{self.model_alias or 'N/A'}`
+        - **URI**: `{self.model_uri or 'Not available'}`
+
+        ## 🚀 Next Steps
+        """
         
-        if self.promotion_status in ["production", "staging"]:
-            recommendations.append({
-                "priority": "low",
-                "category": "deployment",
-                "message": "Model ready for deployment",
-                "actions": [
-                    "Set up model monitoring",
-                    "Implement A/B testing",
-                    "Configure automated retraining"
-                ]
-            })
+        for i, step in enumerate(self.comprehensive_report['next_steps'], 1):
+            summary_content += f"{i}. {step}\n"
         
-        return recommendations
+        summary_file = f"pipeline_summary_{int(time.time())}.md"
+        with open(summary_file, 'w') as f:
+            f.write(summary_content)
+        
+        print(f"📋 Human-readable summary: {summary_file}")
+
     
     @step
     def end(self):
@@ -500,6 +631,8 @@ print("Model performance report generated")
         print(f"   • Version: {self.model_version}")
         print(f"   • Alias: {self.promotion_status}")
         print(f"   • Registry: culane-lane-detector")
+        if self.promotion_status != "failed":
+            print(f"   • URI: models:/culane-lane-detector@{self.promotion_status}")
         
         # Pipeline info
         duration = time.time() - self.pipeline_start_time
@@ -516,7 +649,8 @@ print("Model performance report generated")
         
         print(f"\n🔗 Next Steps:")
         print(f"   1. View results: http://localhost:5000")
-        print(f"   2. Test inference: python src/inference.py --alias {self.promotion_status}")
+        if self.promotion_status != "failed":
+            print(f"   2. Test inference: python src/inference.py --model-uri models:/culane-lane-detector@{self.promotion_status}")
         
         if self.promotion_status in ["staging", "production"]:
             print(f"   3. Deploy model for inference")

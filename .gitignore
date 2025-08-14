@@ -35,3 +35,4 @@ metaflow_runs/
 pipeline_report_*.json
 comprehensive_pipeline_report_*.json
 hyperparameter_results_*.json
+*.json

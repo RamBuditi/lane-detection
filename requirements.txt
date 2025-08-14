@@ -6,4 +6,6 @@ uvicorn
 python-multipart
 pylint
 metaflow
+seaborn
+pyyaml
 evidently

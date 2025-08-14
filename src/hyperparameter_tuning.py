@@ -2,437 +2,363 @@ import os
 import torch
 import mlflow
 import mlflow.pytorch
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
 import json
 import time
 from itertools import product
 import subprocess
 import tempfile
-import shutil
+import yaml
+from dataclasses import dataclass
+from typing import Dict, List, Any, Optional
+import multiprocessing as mp
+import random
+import threading
+import queue
 
-class HyperparameterTuner:
+@dataclass
+class TuningConfig:
+    """Configuration for hyperparameter tuning"""
+    max_workers: int = 2
+    gpu_memory_fraction: float = 0.3
+    max_combinations: int = 8
+    timeout_minutes: int = 20
+    experiment_name: str = "Hyperparameter_Tuning_Lane_Detection"
+    verbose_output: bool = False  # Control output verbosity
+    
+    param_space: Dict[str, List[Any]] = None
+    
+    def __post_init__(self):
+        if self.param_space is None:
+            # Simplified parameter space for quick tuning
+            self.param_space = {
+                'learning_rate': [1e-4, 5e-5, 2e-5],
+                'batch_size': [2, 4],
+                'train_fraction': [0.01, 0.02],
+                'optimizer': ['adam', 'adamw'],
+                'weight_decay': [1e-4, 1e-5],
+                'scheduler': ['cosine', 'step'],
+                'num_epochs': [1],
+                'dropout_rate': [0.1, 0.2],
+                'val_fraction': [0.02, 0.03],
+                'augmentation_prob': [0.3, 0.5]
+            }
+
+class SimplifiedHyperparameterTuner:
     """
-    Parallel hyperparameter tuning optimized for RTX 4060 (8GB VRAM)
-    Uses process-based parallelism to avoid CUDA context conflicts
+    Simplified hyperparameter tuner with controlled output
     """
     
-    def __init__(self, max_workers=2, gpu_memory_fraction=0.4):
-        """
-        Initialize tuner with RTX 4060 constraints
-        
-        Args:
-            max_workers: Number of parallel processes (2 for RTX 4060)
-            gpu_memory_fraction: Memory fraction per process (0.4 = ~3.2GB)
-        """
-        self.max_workers = max_workers
-        self.gpu_memory_fraction = gpu_memory_fraction
+    def __init__(self, config: TuningConfig = None):
+        self.config = config or TuningConfig()
         self.results = []
         
-        # RTX 4060 optimized parameter space
-        self.param_space = {
-            'learning_rate': [1e-5, 2e-5, 5e-5, 1e-4],
-            'batch_size': [2, 4],  # Small batches for 8GB VRAM
-            'train_fraction': [0.01, 0.02, 0.05],
-            'optimizer': ['adam', 'adamw'],
-            'weight_decay': [1e-5, 1e-4, 1e-3],
-            'scheduler': ['cosine', 'step', 'none'],
-            'augmentation_prob': [0.3, 0.5, 0.7]
-        }
-    
-    def generate_param_combinations(self, max_combinations=16):
-        """Generate parameter combinations for tuning"""
-        # Create all combinations
-        keys = list(self.param_space.keys())
-        values = list(self.param_space.values())
+        os.makedirs("mlruns", exist_ok=True)
+        mlflow_uri = f"file://{os.path.abspath('./mlruns')}"
+        mlflow.set_tracking_uri(mlflow_uri)
+        mlflow.set_experiment(self.config.experiment_name)
+        
+    def generate_param_combinations(self) -> List[Dict[str, Any]]:
+        """Generate parameter combinations using smart sampling"""
+        keys = list(self.config.param_space.keys())
+        values = list(self.config.param_space.values())
         all_combinations = list(product(*values))
         
-        # Limit combinations for RTX 4060
-        if len(all_combinations) > max_combinations:
-            import random
-            random.seed(42)
-            combinations = random.sample(all_combinations, max_combinations)
-        else:
+        if len(all_combinations) <= self.config.max_combinations:
             combinations = all_combinations
-        
-        param_sets = []
-        for combo in combinations:
-            param_dict = dict(zip(keys, combo))
-            param_sets.append(param_dict)
-        
-        return param_sets
-    
-    def create_training_script(self, params, gpu_id, temp_dir):
-        """Create a standalone training script for each parameter set"""
-        script_content = f'''
-import os
-import torch
-import torchvision
-from torch.utils.data import Dataset, DataLoader
-import numpy as np
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
-from tqdm import tqdm
-import cv2
-import mlflow
-import mlflow.pytorch
-import json
-
-# Set GPU device
-os.environ["CUDA_VISIBLE_DEVICES"] = "{gpu_id}"
-
-class CulaneDataset(Dataset):
-    def __init__(self, data_root, list_path, transform=None, fraction=1.0):
-        self.data_root = data_root
-        self.transform = transform
-        self.samples = []
-        full_list_path = os.path.join(data_root, list_path)
-        with open(full_list_path, 'r') as f:
-            all_lines = f.readlines()
-        num_samples_to_use = int(len(all_lines) * fraction)
-        lines_to_use = all_lines[:num_samples_to_use]
-        for line in lines_to_use:
-            parts = line.strip().split()
-            self.samples.append({{
-                "image": os.path.join(self.data_root, parts[0].lstrip('/')),
-                "label": os.path.join(self.data_root, parts[1].lstrip('/'))
-            }})
-    
-    def __len__(self):
-        return len(self.samples)
-    
-    def __getitem__(self, idx):
-        sample = self.samples[idx]
-        image = cv2.imread(sample["image"])
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        label = cv2.imread(sample["label"], cv2.IMREAD_GRAYSCALE)
-        if self.transform:
-            transformed = self.transform(image=image, mask=label)
-            image = transformed['image']
-            label = transformed['mask']
-        label = label.long()
-        return {{"image": image, "label": label}}
-
-def main():
-    # Parameters for this run
-    params = {json.dumps(params)}
-    
-    # Configuration
-    DATA_ROOT = 'data/CULane'
-    LIST_PATH = 'list/train_gt.txt'
-    IMG_HEIGHT = 288
-    IMG_WIDTH = 800
-    NUM_CLASSES = 5
-    NUM_EPOCHS = 2  # Short epochs for tuning
-    
-    # Set memory fraction for RTX 4060
-    torch.cuda.set_per_process_memory_fraction({self.gpu_memory_fraction})
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Configure MLflow
-    mlflow_dir = os.path.abspath("./mlruns")
-    mlflow.set_tracking_uri(f"file://{{mlflow_dir}}")
-    mlflow.set_experiment("Hyperparameter Tuning - Lane Detection")
-    
-    with mlflow.start_run() as run:
-        # Log all parameters
-        mlflow.log_params(params)
-        mlflow.log_param("gpu_memory_fraction", {self.gpu_memory_fraction})
-        mlflow.log_param("device", str(device))
-        
-        # Setup transforms with augmentation probability
-        aug_prob = params['augmentation_prob']
-        train_transforms = A.Compose([
-            A.Resize(height=IMG_HEIGHT, width=IMG_WIDTH),
-            A.HorizontalFlip(p=aug_prob),
-            A.RandomBrightnessContrast(p=aug_prob),
-            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ToTensorV2(),
-        ])
-        
-        # Create dataset and dataloader
-        dataset = CulaneDataset(
-            data_root=DATA_ROOT, 
-            list_path=LIST_PATH, 
-            transform=train_transforms, 
-            fraction=params['train_fraction']
-        )
-        
-        dataloader = DataLoader(
-            dataset, 
-            batch_size=params['batch_size'], 
-            shuffle=True, 
-            num_workers=2,
-            pin_memory=True
-            drop_last=True
-        )
-        
-        # Load model
-        model = torchvision.models.segmentation.deeplabv3_resnet50(
-            weights='DeepLabV3_ResNet50_Weights.DEFAULT'
-        )
-        model.classifier[4] = torch.nn.Conv2d(256, NUM_CLASSES, kernel_size=(1, 1))
-        model.to(device)
-        
-        # Setup optimizer based on parameter
-        if params['optimizer'] == 'adam':
-            optimizer = torch.optim.Adam(
-                model.parameters(), 
-                lr=params['learning_rate'],
-                weight_decay=params['weight_decay']
-            )
-        else:  # adamw
-            optimizer = torch.optim.AdamW(
-                model.parameters(), 
-                lr=params['learning_rate'],
-                weight_decay=params['weight_decay']
-            )
-        
-        # Setup scheduler
-        if params['scheduler'] == 'cosine':
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, NUM_EPOCHS)
-        elif params['scheduler'] == 'step':
-            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
         else:
-            scheduler = None
+            random.seed(42)
+            combinations = random.sample(all_combinations, self.config.max_combinations)
         
-        loss_fn = torch.nn.CrossEntropyLoss()
-        
-        # Training loop
-        total_losses = []
-        for epoch in range(NUM_EPOCHS):
-            model.train()
-            epoch_loss = 0.0
-            num_batches = 0
-            
-            for batch in dataloader:
-                try:
-                    images = batch['image'].to(device, non_blocking=True)
-                    labels = batch['label'].to(device, non_blocking=True)
-                    
-                    outputs = model(images)['out']
-                    loss = loss_fn(outputs, labels)
-                    
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    
-                    epoch_loss += loss.item()
-                    num_batches += 1
-                    
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        torch.cuda.empty_cache()
-                        print(f"OOM error, skipping batch")
-                        continue
-                    else:
-                        raise e
-            
-            avg_loss = epoch_loss / max(num_batches, 1)
-            total_losses.append(avg_loss)
-            
-            mlflow.log_metric("epoch_loss", avg_loss, step=epoch)
-            
-            if scheduler:
-                scheduler.step()
-                mlflow.log_metric("learning_rate", scheduler.get_last_lr()[0], step=epoch)
-        
-        # Final metrics
-        final_loss = np.mean(total_losses) if total_losses else float('inf')
-        mlflow.log_metric("final_avg_loss", final_loss)
-        
-        # Save result to file for parent process
-        result = {{
-            "run_id": run.info.run_id,
-            "params": params,
-            "final_loss": final_loss,
-            "gpu_id": {gpu_id}
-        }}
-        
-        with open("{temp_dir}/result.json", "w") as f:
-            json.dump(result, f)
-        
-        print(f"Training complete. Final loss: {{final_loss:.4f}}")
-        
-        # Clean up GPU memory
-        del model
-        torch.cuda.empty_cache()
+        param_sets = [dict(zip(keys, combo)) for combo in combinations]
+        return param_sets
 
-if __name__ == "__main__":
-    main()
-'''
+    def _monitor_process_output(self, process, output_queue, run_info):
+        """Monitor process output in a separate thread with controlled verbosity"""
+        run_id = None
+        important_lines = []
+        last_progress_time = 0
         
-        script_path = os.path.join(temp_dir, "train_worker.py")
-        with open(script_path, 'w') as f:
-            f.write(script_content)
-        
-        return script_path
-    
-    def run_single_training(self, params, gpu_id):
-        """Run a single training job with given parameters"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            try:
-                # Create training script
-                script_path = self.create_training_script(params, gpu_id, temp_dir)
-                
-                # Run training in separate process
-                env = os.environ.copy()
-                env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-                
-                result = subprocess.run(
-                    ["python", script_path],
-                    capture_output=True,
-                    text=True,
-                    env=env,
-                    cwd=os.getcwd()
-                )
-                
-                if result.returncode != 0:
-                    print(f"Training failed for params {params}")
-                    print(f"Error: {result.stderr}")
-                    return {
-                        "params": params,
-                        "final_loss": float('inf'),
-                        "gpu_id": gpu_id,
-                        "error": result.stderr
-                    }
-                
-                # Read result
-                result_file = os.path.join(temp_dir, "result.json")
-                if os.path.exists(result_file):
-                    with open(result_file, 'r') as f:
-                        return json.load(f)
-                else:
-                    return {
-                        "params": params,
-                        "final_loss": float('inf'),
-                        "gpu_id": gpu_id,
-                        "error": "No result file generated"
-                    }
+        try:
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
                     
-            except Exception as e:
-                print(f"Exception in training: {e}")
+                if output:
+                    line = output.strip()
+                    
+                    # Always capture MLflow Run ID
+                    if "MLflow Run ID:" in line:
+                        run_id = line.split(":")[-1].strip()
+                        important_lines.append(f"✅ Run ID captured: {run_id}")
+                    
+                    # Capture important status messages
+                    elif any(keyword in line.lower() for keyword in [
+                        "starting", "complete", "error", "failed", "✅", "❌", "⚠️"
+                    ]):
+                        important_lines.append(line)
+                    
+                    # Handle progress bars with throttling
+                    elif "%" in line and ("Epoch" in line or "Train" in line or "Validation" in line):
+                        current_time = time.time()
+                        if current_time - last_progress_time > 10:  # Only show progress every 10 seconds
+                            important_lines.append(f"📊 {line}")
+                            last_progress_time = current_time
+                    
+                    # Show all output if verbose mode is enabled
+                    elif self.config.verbose_output:
+                        important_lines.append(line)
+        
+        except Exception as e:
+            important_lines.append(f"❌ Output monitoring error: {e}")
+        
+        finally:
+            output_queue.put((run_id, important_lines))
+
+    def run_single_training(self, params_and_gpu):
+        """Run single training job with controlled output"""
+        params, gpu_id = params_and_gpu
+        run_id = None
+        
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                json.dump(params, f, indent=2)
+                config_file = f.name
+            
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            env["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+            
+            cmd = [
+                "python", "src/train.py",
+                "--config", config_file,
+                "--experiment-name", self.config.experiment_name,
+                "--run-name", f"HyperTune_run_{int(time.time())}_{gpu_id}",
+                "--no-validation",
+                "--quiet"  # Add quiet flag to reduce output noise
+            ]
+            
+            param_summary = {k: v for k, v in params.items() if k in ['learning_rate', 'batch_size', 'optimizer']}
+            print(f"\n🧪 Starting training on GPU {gpu_id}")
+            print(f"   Key params: {param_summary}")
+            
+            # Start process
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+                cwd=os.getcwd()
+            )
+            
+            # Monitor output in separate thread
+            output_queue = queue.Queue()
+            monitor_thread = threading.Thread(
+                target=self._monitor_process_output, 
+                args=(process, output_queue, params)
+            )
+            monitor_thread.daemon = True
+            monitor_thread.start()
+            
+            # Wait for process with timeout
+            try:
+                returncode = process.wait(timeout=self.config.timeout_minutes * 60)
+                monitor_thread.join(timeout=5)  # Give monitor thread time to finish
+                
+                # Get output results
+                try:
+                    run_id, important_lines = output_queue.get_nowait()
+                    
+                    # Print condensed summary
+                    print(f"📋 Training summary for GPU {gpu_id}:")
+                    for line in important_lines[-5:]:  # Show last 5 important lines
+                        print(f"   {line}")
+                        
+                except queue.Empty:
+                    print(f"⚠️ No output captured from training on GPU {gpu_id}")
+                    
+            except subprocess.TimeoutExpired:
+                print(f"⏰ Training on GPU {gpu_id} timed out after {self.config.timeout_minutes} minutes")
+                process.kill()
+                process.wait()
                 return {
-                    "params": params,
-                    "final_loss": float('inf'),
-                    "gpu_id": gpu_id,
-                    "error": str(e)
+                    "params": params, "run_id": run_id, "gpu_id": gpu_id, 
+                    "success": False, "error": "Timeout"
                 }
+            
+            finally:
+                if os.path.exists(config_file):
+                    os.unlink(config_file)
+            
+            if returncode == 0 and run_id:
+                print(f"✅ Training on GPU {gpu_id} successful. Run ID: {run_id}")
+                metrics = self._get_mlflow_metrics(run_id)
+                return {
+                    "params": params, "run_id": run_id, "gpu_id": gpu_id, "success": True,
+                    "final_train_loss": metrics.get("final_train_loss", float('inf')),
+                    "best_val_miou": metrics.get("best_val_miou", 0.0),
+                }
+            else:
+                print(f"❌ Training on GPU {gpu_id} failed with return code {returncode}")
+                return {
+                    "params": params, "run_id": run_id, "gpu_id": gpu_id, 
+                    "success": False, "error": f"Return code: {returncode}"
+                }
+
+        except Exception as e:
+            print(f"💥 Exception during training on GPU {gpu_id}: {e}")
+            return {
+                "params": params, "run_id": run_id, "gpu_id": gpu_id, 
+                "success": False, "error": str(e)
+            }
     
-    def run_parallel_tuning(self, max_combinations=16):
-        """Run parallel hyperparameter tuning"""
-        print(f"🔧 Starting parallel hyperparameter tuning for RTX 4060")
-        print(f"📊 Max workers: {self.max_workers}")
-        print(f"🎯 GPU memory fraction per process: {self.gpu_memory_fraction}")
+    def _get_mlflow_metrics(self, run_id: str) -> Dict[str, float]:
+        """Get metrics from a specific MLflow run"""
+        try:
+            client = mlflow.tracking.MlflowClient()
+            run = client.get_run(run_id)
+            metrics = run.data.metrics
+            return {
+                "final_train_loss": metrics.get("final_train_loss", float('inf')),
+                "best_val_miou": metrics.get("best_val_miou", 0.0),
+                "final_val_miou": metrics.get("final_val_miou", 0.0)
+            }
+        except Exception as e:
+            print(f"⚠️ Could not retrieve MLflow metrics for run {run_id}: {e}")
+            return {}
+    
+    def run_parallel_tuning(self) -> List[Dict]:
+        """Run parallel hyperparameter tuning with controlled output"""
+        print(f"\n🔧 Starting hyperparameter tuning")
+        print(f"📁 Experiment: {self.config.experiment_name}")
+        print(f"🔇 Verbose output: {'Enabled' if self.config.verbose_output else 'Disabled'}")
         
-        # Generate parameter combinations
-        param_sets = self.generate_param_combinations(max_combinations)
+        param_sets = self.generate_param_combinations()
         print(f"🧪 Testing {len(param_sets)} parameter combinations")
+        print(f"⏱️ Timeout per run: {self.config.timeout_minutes} minutes")
         
-        # Check GPU availability
         if not torch.cuda.is_available():
             print("❌ CUDA not available!")
             return []
         
         gpu_count = torch.cuda.device_count()
-        print(f"🔍 Found {gpu_count} GPU(s)")
+        print(f"🎮 Found {gpu_count} GPU(s)")
         
-        # Assign GPU IDs (for RTX 4060, typically just GPU 0)
-        gpu_assignments = []
-        for i, params in enumerate(param_sets):
-            gpu_id = i % min(gpu_count, self.max_workers)
-            gpu_assignments.append((params, gpu_id))
+        param_gpu_pairs = [(params, i % gpu_count) for i, params in enumerate(param_sets)]
         
-        # Run parallel training
         start_time = time.time()
         results = []
         
-        # Use ProcessPoolExecutor for true parallelism with CUDA
-        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all jobs
-            futures = []
-            for params, gpu_id in gpu_assignments:
-                future = executor.submit(self.run_single_training, params, gpu_id)
-                futures.append((future, params, gpu_id))
-            
-            # Collect results as they complete
-            for i, (future, params, gpu_id) in enumerate(futures):
-                try:
-                    result = future.result(timeout=600)  # 10 minute timeout
-                    results.append(result)
-                    
-                    loss = result.get('final_loss', float('inf'))
-                    print(f"✅ Completed {i+1}/{len(param_sets)} | GPU {gpu_id} | Loss: {loss:.4f}")
-                    
-                except Exception as e:
-                    print(f"❌ Failed {i+1}/{len(param_sets)} | GPU {gpu_id} | Error: {e}")
-                    results.append({
-                        "params": params,
-                        "final_loss": float('inf'),
-                        "gpu_id": gpu_id,
-                        "error": str(e)
-                    })
+        print(f"\n{'='*60}")
+        print("🚀 HYPERPARAMETER TUNING EXECUTION")
+        print(f"{'='*60}")
         
-        total_time = time.time() - start_time
-        print(f"⏱️ Total tuning time: {total_time:.1f} seconds")
-        
-        # Sort results by loss
-        valid_results = [r for r in results if r['final_loss'] != float('inf')]
-        if valid_results:
-            valid_results.sort(key=lambda x: x['final_loss'])
-            
-            print(f"\n🏆 Top 5 Results:")
-            for i, result in enumerate(valid_results[:5]):
-                print(f"  {i+1}. Loss: {result['final_loss']:.4f} | Params: {result['params']}")
+        # Run jobs based on max_workers setting
+        if self.config.max_workers > 1 and len(param_gpu_pairs) > 1:
+            print(f"🔄 Running {len(param_gpu_pairs)} jobs in parallel (max_workers={self.config.max_workers})")
+            with ProcessPoolExecutor(max_workers=self.config.max_workers) as executor:
+                results = list(executor.map(self.run_single_training, param_gpu_pairs))
         else:
-            print("❌ No valid results obtained!")
+            print("🔄 Running tuning jobs sequentially...")
+            for i, pair in enumerate(param_gpu_pairs):
+                print(f"\n--- Job {i+1}/{len(param_gpu_pairs)} ---")
+                results.append(self.run_single_training(pair))
+
+        total_time = time.time() - start_time
+        
+        print(f"\n{'='*60}")
+        print("📊 HYPERPARAMETER TUNING RESULTS")
+        print(f"{'='*60}")
+        print(f"⏱️ Total time: {total_time/60:.1f} minutes")
+        print(f"📈 Jobs completed: {len(results)}")
+        
+        successful_results = [r for r in results if r.get("success")]
+        failed_results = [r for r in results if not r.get("success")]
+        
+        print(f"✅ Successful: {len(successful_results)}")
+        print(f"❌ Failed: {len(failed_results)}")
+        
+        if failed_results:
+            print(f"\n⚠️ Failed job summary:")
+            for i, result in enumerate(failed_results):
+                error = result.get("error", "Unknown error")
+                gpu_id = result.get("gpu_id", "?")
+                print(f"   {i+1}. GPU {gpu_id}: {error}")
+        
+        if successful_results:
+            # Sort by training loss (lower is better)
+            successful_results.sort(key=lambda x: x.get("final_train_loss", float('inf')))
+            
+            print(f"\n🏆 Top Results (sorted by training loss):")
+            for i, result in enumerate(successful_results[:5]):
+                loss = result.get("final_train_loss", float('inf'))
+                run_id = result.get("run_id", "N/A")
+                params = result.get("params", {})
+                key_params = {k: v for k, v in params.items() if k in ['learning_rate', 'batch_size', 'optimizer']}
+                
+                print(f"\n   🥇 Rank {i+1}:")
+                print(f"      Loss: {loss:.4f}")
+                print(f"      Run ID: {run_id}")
+                print(f"      Key params: {key_params}")
+        else:
+            print("\n❌ No successful training runs found!")
+            print("💡 Suggestions:")
+            print("   - Check GPU memory settings")
+            print("   - Verify training data is accessible")
+            print("   - Enable verbose output: config.verbose_output = True")
         
         # Save results
         results_file = f"hyperparameter_results_{int(time.time())}.json"
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
-        print(f"💾 Results saved to {results_file}")
+        print(f"\n💾 All results saved to: {results_file}")
         
         self.results = results
         return results
     
-    def get_best_params(self):
-        """Get the best performing parameters"""
-        if not self.results:
-            print("No results available!")
+    def get_best_params(self) -> Optional[Dict]:
+        """Get best parameters based on training loss"""
+        if not self.results: 
+            return None
+            
+        successful_results = [
+            r for r in self.results 
+            if r.get("success") and r.get("final_train_loss") != float('inf')
+        ]
+        
+        if not successful_results: 
             return None
         
-        valid_results = [r for r in self.results if r['final_loss'] != float('inf')]
-        if not valid_results:
-            print("No valid results!")
-            return None
-        
-        best_result = min(valid_results, key=lambda x: x['final_loss'])
-        return best_result['params']
+        best_result = min(successful_results, key=lambda x: x.get("final_train_loss", float('inf')))
+        return best_result["params"]
 
 def main():
-    """Main function to run hyperparameter tuning"""
-    # Initialize tuner for RTX 4060
-    tuner = HyperparameterTuner(
-        max_workers=2,  # Conservative for RTX 4060
-        gpu_memory_fraction=0.4  # ~3.2GB per process
+    """Main function for standalone testing"""
+    print("🚀 Starting Hyperparameter Tuning")
+    
+    config = TuningConfig(
+        max_workers=2,
+        max_combinations=4,
+        timeout_minutes=15,
+        verbose_output=False  # Set to True for debugging
     )
     
-    # Run tuning
-    results = tuner.run_parallel_tuning(max_combinations=12)  # Reasonable for testing
+    tuner = SimplifiedHyperparameterTuner(config)
+    results = tuner.run_parallel_tuning()
     
-    # Get best parameters
     best_params = tuner.get_best_params()
     if best_params:
-        print(f"\n🎯 Best parameters found:")
-        for key, value in best_params.items():
-            print(f"  {key}: {value}")
+        print(f"\n🎯 BEST PARAMETERS FOUND:")
+        print(json.dumps(best_params, indent=2))
         
-        # Save best params for later use
         with open("best_hyperparameters.json", "w") as f:
             json.dump(best_params, f, indent=2)
-        print("💾 Best parameters saved to best_hyperparameters.json")
+        print(f"\n💾 Best parameters saved to: best_hyperparameters.json")
+    else:
+        print("\n⚠️ No best parameters found.")
+        print("💡 Check the failed job errors above for debugging.")
 
 if __name__ == "__main__":
     main()
