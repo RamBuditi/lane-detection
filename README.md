@@ -150,7 +150,6 @@ MLflow is used to track all experiments. You can launch the MLflow UI to view an
 
 ## 🛣️ Future Work & Roadmap
 
--   [ ] **CI/CD Integration:** Implement GitHub Actions to automatically run the pipeline on push/merge.
 -   [ ] **Automated Testing:** Add unit tests for utility functions and integration tests for the pipeline.
 -   [ ] **REST API for Inference:** Wrap `inference.py` in a FastAPI service to serve predictions over the network.
 -   [ ] **Production Database:** Migrate from SQLite to a server-based database like PostgreSQL for better scalability.
